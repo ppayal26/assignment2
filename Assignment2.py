@@ -1,49 +1,57 @@
 #!/usr/bin/env python3
-import argparse
 import os
-import sys
+import argparse
+import subprocess
 
-def generate_memory_bar(usage_percentage, max_length=20):
-    """Generate a bar to represent memory usage as a percentage."""
-    num_hashes = int(usage_percentage * max_length)
-    num_spaces = max_length - num_hashes
-    return f"[{'#' * num_hashes}{' ' * num_spaces} | {int(usage_percentage * 100)}%]"
+def read_meminfo():
+    with open('/proc/meminfo', 'r') as file:
+        return {line.split(':')[0]: int(line.split()[1]) for line in file.readlines()}
 
-def get_total_system_memory():
-    """Get the total system memory in kilobytes."""
-    with open('/proc/meminfo', 'r') as f:
-        for line in f:
-            if line.startswith('MemTotal'):
-                return int(line.split()[1])
-    return None
+def calculate_memory(meminfo):
+    return meminfo['MemTotal'] - meminfo['MemAvailable'], meminfo['MemTotal']
 
-def get_available_memory():
-    """Get available system memory from /proc/meminfo."""
-    with open('/proc/meminfo', 'r') as f:
-        for line in f:
-            if line.startswith('MemAvailable'):
-                return int(line.split()[1])
-    return None
-
-def get_process_ids(program_name):
-    """Return a list of process IDs running a specific program."""
+def get_pids(program):
     try:
-        pids = os.popen(f"pidof {program_name}").read().strip().split()
-        return [int(pid) for pid in pids]
-    except Exception:
+        return list(map(int, subprocess.check_output(['pidof', program]).strip().split()))
+    except subprocess.CalledProcessError:
         return []
 
-def get_resident_memory_size(pid):
-    """Get the RSS memory size of a process by its PID."""
+def process_memory(pid):
     try:
-        with open(f'/proc/{pid}/statm', 'r') as f:
-            return int(f.read().split()[1]) * 4096  # In bytes
-    except Exception:
+        with open(f'/proc/{pid}/smaps', 'r') as file:
+            return sum(int(line.split()[1]) for line in file if line.startswith('Rss:'))
+    except FileNotFoundError:
         return 0
 
-def parse_arguments():
-    """Parse command-line arguments."""
-    parser = argparse.ArgumentParser(description='Memory Visualizer')
-    parser.add_argument('-H', '--human-readable', action='store_true', help="Display memory in a human-readable format")
-    parser.add_argument('-l', '--length', type=int, default=20, help="Graph length (default: 20)")
-    parser.add_argume
+def display_program_memory(program):
+    pids = get_pids(program)
+    total = 0
+    for pid in pids:
+        rss = process_memory(pid)
+        total += rss
+        print(f"Process {pid}: {rss} kB")
+    print(f"Total memory for {program}: {total} kB")
+
+def print_memory_bar(used, total, bar_length, human_readable=False):
+    used_display = f"{used / (1024 ** 2):.2f} GiB" if human_readable else f"{used} kB"
+    total_display = f"{total / (1024 ** 2):.2f} GiB" if human_readable else f"{total} kB"
+    percent = used / total
+    bar = '#' * int(bar_length * percent) + '-' * (bar_length - int(bar_length * percent))
+    print(f"Memory [{bar} | {percent:.0%}] {used_display}/{total_display}")
+
+def main():
+    parser = argparse.ArgumentParser(description="Monitor memory usage.")
+    parser.add_argument("program", nargs="?", help="Program name to analyze")
+    parser.add_argument("-H", action="store_true", help="Display memory in human-readable format")
+    parser.add_argument("-l", type=int, default=20, help="Length of the memory bar")
+    args = parser.parse_args()
+
+    meminfo = read_meminfo()
+    if args.program:
+        display_program_memory(args.program)
+    else:
+        used, total = calculate_memory(meminfo)
+        print_memory_bar(used, total, args.l, args.H)
+
+if __name__ == "__main__":
+    main()
